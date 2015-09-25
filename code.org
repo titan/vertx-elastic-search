@@ -1,0 +1,216 @@
+* Implemention
+** Namespace
+#+begin_src clojure :exports code :noweb yes :mkdirp yes :tangle /dev/shm/vertx-elastic-search-build/src/vertx/elasticsearch/core.clj
+  (ns vertx.elasticsearch.core
+    (:import [java.util Date List Map Map$Entry]
+             [clojure.lang BigInt IPersistentMap Ratio Seqable IPersistentVector
+              IPersistentList IPersistentSet IPersistentCollection Associative Keyword ISeq]
+             [io.vertx.core AbstractVerticle AsyncResult DeploymentOptions Handler Verticle Vertx]
+             io.vertx.core.buffer.Buffer
+             [io.vertx.core.eventbus EventBus Message]
+             [io.vertx.core.http HttpClient HttpClientRequest HttpClientResponse]
+             [io.vertx.core.json JsonArray JsonObject]
+             [io.vertx.core.logging Logger LoggerFactory])
+    (:gen-class
+     :name vertx.elasticsearch.core
+     :extends io.vertx.core.AbstractVerticle))
+#+end_src
+
+** Main
+#+begin_src clojure :exports code :noweb yes :mkdirp yes :tangle /dev/shm/vertx-elastic-search-build/src/vertx/elasticsearch/core.clj
+  <<globals>>
+  <<utilities>>
+
+  (defn- handle-request [{:keys [^HttpClient client transports ^Logger logger] :as app-state} ^IPersistentMap request callback]
+    (if-let [action (:action request)]
+      (condp = action
+        "index" (let [index (:_index request)
+                      type (:_type request)
+                      id (:_id request)
+                      source (:_source request)
+                      ^JsonObject json (encode source)
+                      json-str (str json)
+                      transport (first transports)]
+                  (.info logger (str "index to " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
+                  (.. client
+                      (put (:port transport) (:host transport) (str "/" index "/" type "/" id)
+                           (handler [^HttpClientResponse response]
+                                    (.bodyHandler response (handler [^Buffer buf]
+                                                                    (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                                    (if-not (== 200 (.statusCode response))
+                                      (callback nil))))
+                      (putHeader "Content-Length" (str (count json-str)))
+                      (putHeader "Content-Type" "application/json")
+                      (write json-str)
+                      (end)))
+        (do
+          (.info logger (str "Unknown action: " action))
+          (callback nil)))
+      (callback nil)))
+
+  (defn -start-void [^AbstractVerticle this]
+    (binding [*vertx* (.getVertx this)]
+      (let [^JsonObject conf (.config this)
+            ^String addr (.getString conf "address")
+            transports (decode (.getJsonArray conf "transports"))
+            ^EventBus eb (.eventBus *vertx*)
+            ^HttpClient client (.createHttpClient *vertx*)
+            app-state {:transports transports
+                       :client client
+                       :logger (LoggerFactory/getLogger "vertx.elasticsearch.core")}]
+        (.localConsumer eb addr
+                        (handler [^Message msg]
+                                 (let [decoded (decode (.body msg))]
+                                   (handle-request app-state decoded
+                                                   (fn [result]
+                                                     (if (nil? result)
+                                                       (.reply msg (encode {:status "error"}))
+                                                       (.reply msg (encode result)))))))))))
+#+end_src
+** Globals
+#+begin_src clojure :noweb-ref globals
+  (set! *warn-on-reflection* true)
+  (defonce ^{:dynamic true
+             :doc "The currently active default vertx instance.
+                     When inside a Vert.x container, the root binding will
+                     be set on verticle deployment. When embeded, you will
+                     need to either bind this when needed, or alter its
+                     root binding by calling vertx.embed/set-vertx!."}
+    ^Vertx *vertx* nil)
+#+end_src
+** Utilities
+#+begin_src clojure :noweb-ref utilities
+  (defprotocol ExceptionAsMap
+      (exception->map [this]))
+
+    (extend-protocol ExceptionAsMap
+      nil
+      (exception->map [_] nil)
+      Throwable
+      (exception->map [e]
+        {:message (.getMessage e)
+         :cause (.getCause e)
+         :basis e}))
+
+    (defprotocol Encodeable
+      (encode [data]))
+
+    (defn- put
+      ([^JsonObject jobj ^Map$Entry e]
+       (put jobj (.getKey e) (.getValue e)))
+      ([^JsonObject jobj k v]
+       (doto jobj (.put ^String (encode k) (encode v)))))
+
+    (defn- map->JsonObject [data]
+      (reduce #(put %1 (first %2) (second %2))
+              (JsonObject.)
+              (seq data)))
+
+    (defn- java-map->JsonObject [^Map data]
+      (reduce #(put %1 %2)
+              (JsonObject.)
+              (seq data)))
+
+    (defn- seq->JsonArray [data]
+      (reduce #(doto ^JsonArray %1 (.add (encode %2)))
+              (JsonArray.)
+              data))
+
+    (defn- encode-collection [data]
+      ((condp instance? data
+         IPersistentMap    map->JsonObject
+         IPersistentVector seq->JsonArray
+         IPersistentList   seq->JsonArray
+         IPersistentSet    seq->JsonArray
+         ISeq              seq->JsonArray
+         Associative       map->JsonObject)
+       data))
+
+    (extend-protocol Encodeable
+      Object
+      (encode [data] data)
+      nil
+      (encode [data] nil)
+      BigDecimal
+      (encode [data] (double data))
+      BigInt
+      (encode [data] (long data))
+      ;; clojure maps are Maps and Seqables, and sometimes the Seqable
+      ;; version gets called for a them. Let's explicitly handle IPersistentCollections.
+      IPersistentCollection
+      (encode [data]
+        (encode-collection data))
+      Map
+      (encode [data]
+        (java-map->JsonObject data))
+      Ratio
+      (encode [data] (double data))
+      Seqable
+      (encode [data]
+        (seq->JsonArray data))
+      List
+      (encode [data]
+        (seq->JsonArray data))
+      Keyword
+      (encode [data]
+        (.substring (str data) 1)))
+
+    (defprotocol Decodeable
+      (decode [data]))
+
+    (extend-protocol Decodeable
+      Object
+      (decode [data] data)
+      nil
+      (decode [data] nil)
+      JsonArray
+      (decode [data]
+        (map decode data))
+      JsonObject
+      (decode [data]
+        (decode (.getMap data)))
+      Map
+      (decode [data]
+        (reduce (fn [m ^Map$Entry e]
+                  (assoc m
+                         (keyword (.getKey e))
+                         (decode (.getValue e))))
+                {} (seq data)))
+      List
+      (decode [data]
+        (vec (map decode data))))
+
+  (defn ^:internal ^:no-doc handler?
+    "Returns true if h is an instance of org.vertx.java.core.Handler"
+    [h]
+    (instance? Handler h))
+
+  (defn ^Handler as-handler
+    "Wraps the given single-arity f in a org.vertx.java.core.Handler.
+      Returns f unmodified if it is nil or already a Handler. If provided,
+      result-fn will be applied to the event before passing it to f."
+    ([f]
+     (as-handler f identity))
+    ([f result-fn]
+     (if (or (nil? f) (handler? f))
+       f
+       (let [boundf (if (.getRawRoot #'*vertx*)
+                      #(f (result-fn %))
+                      (bound-fn [x] (f (result-fn x))))]
+         (reify Handler
+           (handle [_# event#]
+             (boundf event#)))))))
+
+  (defmacro handler
+    "Wraps the given bindings and body in a org.vertx.java.core.Handler.
+       Calling (handler [foo] (bar foo)) is analogous to calling
+       (as-handler (fn [foo] (bar foo)))."
+    [bindings & body]
+    `(as-handler (fn ~bindings
+                   ~@body)))
+#+end_src
+
+** Module configure
+#+begin_src javascript :exports code :noweb yes :mkdirp yes :tangle /dev/shm/vertx-elastic-search-build/classes/mod.json
+  {"main": "vertx.elasticsearch.core"}
+#+end_src
