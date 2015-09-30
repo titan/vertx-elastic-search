@@ -55,9 +55,11 @@
             transports (decode (.getJsonArray conf "transports"))
             ^EventBus eb (.eventBus *vertx*)
             ^HttpClient client (.createHttpClient *vertx*)
+            ^Logger logger (LoggerFactory/getLogger "vertx.elasticsearch.core")
             app-state {:transports transports
                        :client client
-                       :logger (LoggerFactory/getLogger "vertx.elasticsearch.core")}]
+                       :logger logger}]
+        (.info logger (str "vertx-elasticsearch@" addr " connects to " (let [transport (first transports)] (str (:host transport) ":" (:port transport)))))
         (.localConsumer eb addr
                         (handler [^Message msg]
                                  (let [decoded (decode (.body msg))]
