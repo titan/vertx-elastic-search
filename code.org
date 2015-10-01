@@ -2,7 +2,7 @@
 ** Namespace
 #+begin_src clojure :exports code :noweb yes :mkdirp yes :tangle /dev/shm/vertx-elastic-search-build/src/vertx/elasticsearch/core.clj
   (ns vertx.elasticsearch.core
-    (:import [java.util Date List Map Map$Entry]
+    (:import [java.util Date List Map Map$Entry Random]
              [clojure.lang BigInt IPersistentMap Ratio Seqable IPersistentVector
               IPersistentList IPersistentSet IPersistentCollection Associative Keyword ISeq]
              [io.vertx.core AbstractVerticle AsyncResult DeploymentOptions Handler Verticle Vertx]
@@ -21,28 +21,11 @@
   <<globals>>
   <<utilities>>
 
-  (defn- handle-request [{:keys [^HttpClient client transports ^Logger logger] :as app-state} ^IPersistentMap request callback]
+  (defn- handle-request [{:keys [^HttpClient client ^ISeq transports ^Logger logger] :as app-state} ^IPersistentMap request callback]
     (if-let [action (:action request)]
       (condp = action
-        "index" (let [index (:_index request)
-                      type (:_type request)
-                      id (:_id request)
-                      source (:_source request)
-                      ^JsonObject json (encode source)
-                      json-str (str json)
-                      transport (first transports)]
-                  (.info logger (str "index to " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
-                  (.. client
-                      (put (:port transport) (:host transport) (str "/" index "/" type "/" id)
-                           (handler [^HttpClientResponse response]
-                                    (.bodyHandler response (handler [^Buffer buf]
-                                                                    (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
-                                    (if-not (== 200 (.statusCode response))
-                                      (callback nil))))
-                      (putHeader "Content-Length" (str (count json-str)))
-                      (putHeader "Content-Type" "application/json")
-                      (write json-str)
-                      (end)))
+        "index"
+        <<index>>
         (do
           (.info logger (str "Unknown action: " action))
           (callback nil)))
@@ -52,14 +35,19 @@
     (binding [*vertx* (.getVertx this)]
       (let [^JsonObject conf (.config this)
             ^String addr (.getString conf "address")
-            transports (decode (.getJsonArray conf "transports"))
+            ^ISeq transports (decode (.getJsonArray conf "transports"))
             ^EventBus eb (.eventBus *vertx*)
             ^HttpClient client (.createHttpClient *vertx*)
             ^Logger logger (LoggerFactory/getLogger "vertx.elasticsearch.core")
             app-state {:transports transports
                        :client client
                        :logger logger}]
-        (.info logger (str "vertx-elasticsearch@" addr " connects to " (let [transport (first transports)] (str (:host transport) ":" (:port transport)))))
+        (.info logger (str "vertx-elasticsearch@" addr " connects to "
+                           (loop [ts transports
+                                  result nil]
+                             (if (== (count ts) 0)
+                               (reduce (fn [acc x] (str x " " acc)) "" result)
+                               (recur (rest ts) (cons (str (:host (first ts)) ":" (:port (first ts))) result))))))
         (.localConsumer eb addr
                         (handler [^Message msg]
                                  (let [decoded (decode (.body msg))]
@@ -69,6 +57,51 @@
                                                        (.reply msg (encode {:status "error"}))
                                                        (.reply msg (encode result)))))))))))
 #+end_src
+** Index request
+CLOCK: [2015-10-01 Thu 16:00]--[2015-10-01 Thu 16:25] =>  0:25
+CLOCK: [2015-10-01 Thu 08:00]--[2015-10-01 Thu 08:24] =>  0:24
+#+begin_src clojure :noweb-ref index
+  (let [index (:_index request)
+        type (:_type request)
+        id (:_id request)
+        source (:_source request)
+        ^JsonObject json (encode source)
+        json-str (str json)
+        transport (choose-1 transports)]
+    (.info logger (str "index to " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
+    (.. client
+        (put (:port transport) (:host transport) (str "/" index "/" type "/" id)
+             (handler [^HttpClientResponse response]
+                      (.bodyHandler response (handler [^Buffer buf]
+                                                      (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                      (if-not (== 200 (.statusCode response))
+                        (callback nil))))
+        (putHeader "Content-Length" (str (count json-str)))
+        (putHeader "Content-Type" "application/json")
+        (write json-str)
+        (end)))
+#+end_src
+
+** Get request
+#+begin_src clojure :noweb-ref get
+
+#+end_src
+
+** Search request
+#+begin_src clojure :noweb-ref search
+
+#+end_src
+
+** Scroll request
+#+begin_src clojure :noweb-ref scroll
+
+#+end_src
+
+** Delete request
+#+begin_src clojure :noweb-ref delete
+
+#+end_src
+
 ** Globals
 #+begin_src clojure :noweb-ref globals
   (set! *warn-on-reflection* true)
@@ -79,6 +112,9 @@
                      need to either bind this when needed, or alter its
                      root binding by calling vertx.embed/set-vertx!."}
     ^Vertx *vertx* nil)
+
+  (defonce ^:dynamic ^Random *random* (new Random (.getTime (new Date))))
+
 #+end_src
 ** Utilities
 #+begin_src clojure :noweb-ref utilities
@@ -210,6 +246,9 @@
     [bindings & body]
     `(as-handler (fn ~bindings
                    ~@body)))
+
+  (defmacro choose-1 [^ISeq options]
+    `(nth ~options (.nextInt *random* (count ~options))))
 #+end_src
 
 ** Module configure
