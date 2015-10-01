@@ -30,6 +30,8 @@
         <<get>>
         "search"
         <<search>>
+        "delete"
+        <<delete>>
         (do
           (.info logger (str "Unknown action: " action))
           (callback nil)))
@@ -132,8 +134,20 @@ CLOCK: [2015-10-01 Thu 16:48]--[2015-10-01 Thu 17:08] =>  0:20
 #+end_src
 
 ** Delete request
+CLOCK: [2015-10-01 Thu 22:15]--[2015-10-01 Thu 22:17] =>  0:02
 #+begin_src clojure :noweb-ref delete
-
+  (let [index (:_index request)
+        type (:_type request)
+        id (:_id request)
+        transport (choose-1 transports)]
+    (.info logger (str "delete doc of " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
+    (.. client
+        (delete (:port transport) (:host transport) (str "/" index "/" type "/" id)
+             (handler [^HttpClientResponse response]
+                      (.bodyHandler response (handler [^Buffer buf]
+                                                      (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                      (if-not (== 200 (.statusCode response))
+                        (callback nil))))))
 #+end_src
 
 ** Globals
