@@ -28,6 +28,8 @@
         <<index>>
         "get"
         <<get>>
+        "search"
+        <<search>>
         (do
           (.info logger (str "Unknown action: " action))
           (callback nil)))
@@ -102,8 +104,26 @@ CLOCK: [2015-10-01 Thu 16:27]--[2015-10-01 Thu 16:44] =>  0:17
 #+end_src
 
 ** Search request
+CLOCK: [2015-10-01 Thu 16:48]--[2015-10-01 Thu 17:08] =>  0:20
 #+begin_src clojure :noweb-ref search
-
+  (let [index (:_index request)
+        type (:_type request)
+        id "_search"
+        ^JsonObject json (encode (dissoc request :action :_index :_type))
+        json-str (str json)
+        transport (choose-1 transports)]
+    (.info logger (str "search from " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
+    (.. client
+        (get (:port transport) (:host transport) (str "/" index "/" type "/" id)
+             (handler [^HttpClientResponse response]
+                      (.bodyHandler response (handler [^Buffer buf]
+                                                      (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                      (if-not (== 200 (.statusCode response))
+                        (callback nil))))
+        (putHeader "Content-Length" (str (count json-str)))
+        (putHeader "Content-Type" "application/json")
+        (write json-str)
+        (end)))
 #+end_src
 
 ** Scroll request
