@@ -30,6 +30,8 @@
         <<get>>
         "search"
         <<search>>
+        "scroll"
+        <<scroll>>
         "delete"
         <<delete>>
         (do
@@ -129,8 +131,22 @@ CLOCK: [2015-10-01 Thu 16:48]--[2015-10-01 Thu 17:08] =>  0:20
 #+end_src
 
 ** Scroll request
+CLOCK: [2015-10-01 Thu 22:18]--[2015-10-01 Thu 22:27] =>  0:09
 #+begin_src clojure :noweb-ref scroll
-
+  (let [^String scroll-id (:_scroll_id request)
+        ^String scroll (:scroll request)
+        transport (choose-1 transports)]
+    (.info logger (str "scroll " scroll-id " through " (:host transport) ":" (:port transport) "/_search" (if-not (nil? scroll) (str "/" scroll) "")))
+    (.. client
+        (get (:port transport) (:host transport) (str "/_search" (if-not (nil? scroll) (str "/" scroll) ""))
+             (handler [^HttpClientResponse response]
+                      (.bodyHandler response (handler [^Buffer buf]
+                                                      (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                      (if-not (== 200 (.statusCode response))
+                        (callback nil))))
+        (putHeader "Content-Length" (str (count scroll-id)))
+        (write scroll-id)
+        (end)))
 #+end_src
 
 ** Delete request
