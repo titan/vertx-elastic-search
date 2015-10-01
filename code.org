@@ -26,6 +26,8 @@
       (condp = action
         "index"
         <<index>>
+        "get"
+        <<get>>
         (do
           (.info logger (str "Unknown action: " action))
           (callback nil)))
@@ -83,8 +85,20 @@ CLOCK: [2015-10-01 Thu 08:00]--[2015-10-01 Thu 08:24] =>  0:24
 #+end_src
 
 ** Get request
+CLOCK: [2015-10-01 Thu 16:27]--[2015-10-01 Thu 16:44] =>  0:17
 #+begin_src clojure :noweb-ref get
-
+  (let [index (:_index request)
+        type (:_type request)
+        id (:_id request)
+        transport (choose-1 transports)]
+    (.info logger (str "get doc from " (:host transport) ":" (:port transport) "/" index "/" type "/" id))
+    (.. client
+        (get (:port transport) (:host transport) (str "/" index "/" type "/" id)
+             (handler [^HttpClientResponse response]
+                      (.bodyHandler response (handler [^Buffer buf]
+                                                      (callback (assoc (decode (new JsonObject (.toString buf "UTF-8"))) "status" "ok"))))
+                      (if-not (== 200 (.statusCode response))
+                        (callback nil))))))
 #+end_src
 
 ** Search request
